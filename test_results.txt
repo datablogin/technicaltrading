@@ -1,0 +1,105 @@
+
+Testing image: test_charts/buy_double_bottom.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [96, 102, 124, 130, 266, 271, 277, 409, 415, 421, 429, 432, 436, 439, 447, 462, 470, 475, 482, 487, 494, 501, 505, 513, 546, 550, 558, 693, 699, 836, 842, 871, 877, 884, 889, 904, 907, 912, 914, 923, 936]
+Peaks found: [431, 434, 437, 477, 480, 548, 894, 900, 908, 913, 925, 932, 935]
+Marked image saved to: marked_buy_double_bottom.png
+
+Testing image: test_charts/sell_double_top.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [96, 102, 124, 130, 157, 164, 171, 179, 183, 188, 230, 236, 247, 253, 263, 265, 274, 409, 415, 485, 491, 497, 517, 534, 551, 557, 635, 642, 651, 658, 665, 690, 696, 702, 789, 795, 801, 814, 818, 823, 836, 842, 871, 877, 886, 898]
+Peaks found: [264, 660, 793, 817, 819, 887, 892, 900, 913]
+Marked image saved to: marked_sell_double_top.png
+
+Testing image: test_charts/hold_flat.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [96, 102, 124, 130, 266, 272, 409, 415, 551, 557, 568, 572, 575, 581, 587, 590, 593, 601, 608, 638, 644, 648, 655, 660, 662, 665, 669, 672, 677, 679, 684, 686, 688, 693, 703, 714, 723, 790, 793, 801, 815, 821, 836, 842, 871, 877, 885, 892, 899, 901]
+Peaks found: [570, 573, 589, 591, 603, 637, 661, 664, 667, 678, 685, 687, 792, 798, 900]
+Marked image saved to: marked_hold_flat.png
+
+Testing image: test_charts/buy_double_bottom.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: []
+Peaks found: []
+Marked image saved to: marked_buy_double_bottom.png
+
+Testing image: test_charts/sell_double_top.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: []
+Peaks found: []
+Marked image saved to: marked_sell_double_top.png
+
+Testing image: test_charts/hold_flat.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: []
+Peaks found: []
+Marked image saved to: marked_hold_flat.png
+
+Testing image: test_charts/buy_double_bottom.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: []
+Peaks found: []
+Marked image saved to: marked_buy_double_bottom.png
+
+Testing image: test_charts/sell_double_top.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: []
+Peaks found: []
+Marked image saved to: marked_sell_double_top.png
+
+Testing image: test_charts/hold_flat.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: []
+Peaks found: []
+Marked image saved to: marked_hold_flat.png
+
+Testing image: test_charts/buy_double_bottom.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [271, 410, 433, 435, 440, 445, 463, 470, 482, 488, 506, 512, 545, 552, 692, 698, 880, 894, 898, 906, 914, 926, 933]
+Peaks found: [432, 434, 436, 467, 478, 509, 879, 901, 909, 913]
+Marked image saved to: marked_buy_double_bottom.png
+
+Testing image: test_charts/sell_double_top.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [168, 184, 190, 196, 206, 212, 228, 234, 255, 388, 402, 436, 440, 444, 466, 476, 483, 498, 508, 515, 531, 537, 692, 799]
+Peaks found: [169, 178, 187, 209, 218, 231, 263, 390, 439, 475, 495, 512, 695]
+Marked image saved to: marked_sell_double_top.png
+
+Testing image: test_charts/hold_flat.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [273, 280, 385, 392, 418, 426, 433, 443, 449, 457, 459, 502, 551, 557, 692, 698, 880, 886, 896, 901, 911, 922]
+Peaks found: [388, 404, 425, 446, 458, 462, 879, 887, 891, 900]
+Marked image saved to: marked_hold_flat.png
+
+Testing image: test_charts/buy_double_bottom.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [274, 410, 551, 557, 692, 698, 924]
+Peaks found: []
+Marked image saved to: marked_buy_double_bottom.png
+
+Testing image: test_charts/sell_double_top.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [410, 551, 557, 692, 927]
+Peaks found: []
+Marked image saved to: marked_sell_double_top.png
+
+Testing image: test_charts/hold_flat.png
+Extracted prices: [65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]...[65. 65. 65. 65. 65. 65. 65. 65. 65. 65.]
+Min price: 47.5, Max price: 65.0
+Troughs found: [410, 551, 557, 692, 698]
+Peaks found: []
+Marked image saved to: marked_hold_flat.png
