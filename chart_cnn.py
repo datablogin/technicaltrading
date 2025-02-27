@@ -7,6 +7,7 @@ import json
 import cv2
 from PIL import Image
 import numpy as np
+from scipy.ndimage import median_filter
 
 
 class ChartDataset(Dataset):
@@ -27,9 +28,18 @@ class ChartDataset(Dataset):
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise ValueError(f"Failed to load image: {image_path}")
-        # Mask edges (e.g., green bars at 0 and 100) to reduce bias
-        image[:, 0:10] = 255  # White out left edge
-        image[:, -10:] = 255  # White out right edge
+
+        # Mask vertical noise (e.g., green bars at edges)
+        col_averages = np.mean(image, axis=0)
+        mean_avg = np.mean(col_averages)
+        std_avg = np.std(col_averages)
+        threshold = mean_avg + 2 * std_avg  # Identify noisy columns (e.g., bright green bars)
+        noisy_columns = np.where(col_averages > threshold)[0]
+
+        # Apply 1D median filter to noisy columns
+        filtered_image = median_filter(image, size=(3, 1))  # 3x1 window for vertical smoothing
+        image[:, noisy_columns] = filtered_image[:, noisy_columns]  # Blend only noisy columns
+
         image = Image.fromarray(image)
         data = self.data[image_name.replace('.png', '.json')]
         prices = torch.tensor(data['prices'][:100], dtype=torch.float32)
@@ -52,7 +62,6 @@ class ChartCNN(nn.Module):
         self.fc1 = nn.Linear(128 * 32 * 32, 1024)
         self.fc2 = nn.Linear(1024, 100)
         self.dropout = nn.Dropout(0.3)
-        # Initialize weights
         self._initialize_weights()
 
     def _initialize_weights(self):
@@ -106,8 +115,8 @@ criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-# Training loop with more epochs
-for epoch in range(150):  # Increased to 150 epochs
+# Training loop
+for epoch in range(150):
     model.train()
     for images, labels in dataloader:
         optimizer.zero_grad()
@@ -120,7 +129,7 @@ for epoch in range(150):  # Increased to 150 epochs
     print(f"Epoch {epoch + 1}, Loss: {loss.item()}")
 
 
-# Post-process to detect troughs/peaks with pattern-specific logic
+# Post-process to detect troughs/peaks
 def detect_patterns(prices, pattern, threshold=1.0, min_distance=10):
     troughs, peaks = [], []
     prices = prices.copy()
@@ -132,16 +141,16 @@ def detect_patterns(prices, pattern, threshold=1.0, min_distance=10):
         elif prices[i] > prices[i - 1] + threshold and prices[i] > prices[i + 1] + threshold:
             if not peaks or i - peaks[-1] >= min_distance:
                 peaks.append(i)
-    # Adjust based on pattern to match expected number of troughs/peaks
+    # Adjust based on pattern
     if pattern == "Buy" and "Double Bottom" in image_name:
-        troughs = troughs[:2]  # Limit to 2 troughs for Double Bottom
-        peaks = peaks[:1]  # Limit to 1 peak
+        troughs = sorted(troughs)[:2]  # Top 2 troughs
+        peaks = sorted(peaks, reverse=True)[:1]  # Largest peak
     elif pattern == "Buy" and "Ascending Triangle" in image_name:
-        troughs = troughs[:1]  # Limit to 1 trough
-        peaks = peaks[:3]  # Limit to 3 peaks
+        troughs = sorted(troughs)[:1]  # Lowest trough
+        peaks = sorted(peaks, reverse=True)[:3]  # Top 3 peaks
     elif pattern == "Buy" and "Inverse Head and Shoulders" in image_name:
-        troughs = troughs[:5]  # Limit to 5 troughs
-        peaks = peaks[:4]  # Limit to 4 peaks
+        troughs = sorted(troughs)[:5]  # Top 5 troughs
+        peaks = sorted(peaks, reverse=True)[:4]  # Top 4 peaks
     return troughs, peaks
 
 
