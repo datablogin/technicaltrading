@@ -8,11 +8,15 @@ import cv2
 from PIL import Image
 import numpy as np
 from scipy.ndimage import median_filter
-import skimage.metrics as skmetrics  # For PSNR (optional for validation)
+import skimage.metrics as skmetrics  # For SSIM
+
+# Check for GPU availability
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 
 class ChartDataset(Dataset):
-    def __init__(self, image_dir, json_dir, transform=None, window_size=3, threshold_factor=2):
+    def __init__(self, image_dir, json_dir, transform=None, window_size=3, threshold_factor=2.5):
         self.image_dir = image_dir
         self.json_dir = json_dir
         self.transform = transform
@@ -55,7 +59,7 @@ class ChartDataset(Dataset):
         return image, {"prices": prices, "troughs": troughs, "peaks": peaks, "pattern": pattern}
 
     @staticmethod
-    def optimize_params(image_dir, json_dir, window_sizes=[3, 5, 7], threshold_factors=[1.5, 2, 2.5]):
+    def optimize_params(image_dir, json_dir, window_sizes=[3, 5, 7], threshold_factors=[2.5, 3, 3.5]):
         # Define the transform pipeline to convert PIL to tensor
         transform = transforms.Compose([
             transforms.Grayscale(),
@@ -64,34 +68,34 @@ class ChartDataset(Dataset):
             transforms.Normalize((0.5,), (0.5,))
         ])
 
-        best_psnr = -float('inf')
-        best_params = {'window_size': 3, 'threshold_factor': 2}
+        best_ssim = -float('inf')
+        best_params = {'window_size': 3, 'threshold_factor': 2.5}
 
         for w in window_sizes:
             for k in threshold_factors:
                 dataset = ChartDataset(image_dir, json_dir, window_size=w, threshold_factor=k)
-                total_psnr = 0
-                for idx in range(len(dataset)):
+                total_ssim = 0
+                sample_size = min(5, len(dataset))  # Use a subset to speed up
+                for idx in range(sample_size):
                     image, _ = dataset[idx]  # Get PIL image
                     # Apply transform to convert to tensor
                     tensor_image = transform(image).cpu().numpy()
                     # Remove channel dimension and undo normalization
                     tensor_image = (tensor_image[0] + 1) / 2 * 255  # Undo Normalize((0.5,), (0.5,)) and scale to 0-255
-                    tensor_image = tensor_image.astype(np.float64)  # Ensure float64 for consistency
+                    tensor_image = tensor_image.astype(np.float64)
                     # Load and resize original image to match 256x256
                     original_path = os.path.join(image_dir, dataset.images[idx])
                     original = cv2.imread(original_path, cv2.IMREAD_GRAYSCALE)
                     if original is None:
                         raise ValueError(f"Failed to load original image: {original_path}")
-                    # Resize original to 256x256 and convert to float64
                     original = cv2.resize(original, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float64)
-                    # Calculate PSNR with consistent data range
-                    psnr = skmetrics.peak_signal_noise_ratio(original, tensor_image, data_range=255)
-                    total_psnr += psnr
-                avg_psnr = total_psnr / len(dataset)
-                print(f"Window={w}, Threshold={k}, Average PSNR={avg_psnr:.2f}")
-                if avg_psnr > best_psnr:
-                    best_psnr = avg_psnr
+                    # Calculate SSIM with consistent data range
+                    ssim = skmetrics.structural_similarity(original, tensor_image, data_range=255)
+                    total_ssim += ssim
+                avg_ssim = total_ssim / sample_size
+                print(f"Window={w}, Threshold={k}, Average SSIM={avg_ssim:.4f}")
+                if avg_ssim > best_ssim:
+                    best_ssim = avg_ssim
                     best_params = {'window_size': w, 'threshold_factor': k}
 
         return best_params
@@ -134,8 +138,8 @@ class ChartCNN(nn.Module):
 # Custom collate function
 def collate_fn(batch):
     images, labels = zip(*batch)
-    images = torch.stack(images, 0)
-    prices = torch.stack([label["prices"] for label in labels], 0)
+    images = torch.stack(images, 0).to(device)  # Move to device (CPU or GPU)
+    prices = torch.stack([label["prices"] for label in labels], 0).to(device)
     troughs = [label["troughs"] for label in labels]
     peaks = [label["peaks"] for label in labels]
     patterns = [label["pattern"] for label in labels]
@@ -161,17 +165,18 @@ dataset = ChartDataset(image_dir="test_charts/new", json_dir="test_charts/new", 
                        window_size=window_size, threshold_factor=threshold_factor)
 dataloader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_fn)
 
-model = ChartCNN()
+model = ChartCNN().to(device)  # Move model to device
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5,
-                                                       verbose=True)  # Added verbose for debugging
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5,
+                                                       patience=15)  # Increased patience
 
-# Training loop with initial loss stabilization
-for epoch in range(250):
+# Training loop with initial loss stabilization and learning rate reset
+for epoch in range(350):  # Increased to 350 epochs
     model.train()
     epoch_loss = 0
     for images, labels in dataloader:
+        images, labels["prices"] = images.to(device), labels["prices"].to(device)  # Ensure data is on device
         optimizer.zero_grad()
         outputs = model(images)
         prices = labels["prices"]
@@ -184,6 +189,12 @@ for epoch in range(250):
     avg_loss = epoch_loss / len(dataloader)
     scheduler.step(avg_loss)
     print(f"Epoch {epoch + 1}, Loss: {avg_loss}")
+    print(f"Current Learning Rate: {optimizer.param_groups[0]['lr']}")
+    # Reset learning rate if too low
+    if optimizer.param_groups[0]['lr'] < 1e-6 and epoch % 50 == 0:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = 0.001
+        print(f"Reset Learning Rate to 0.001 at Epoch {epoch + 1}")
 
 
 # Time series metrics function
@@ -245,15 +256,16 @@ def detect_patterns(prices, pattern, image_name, threshold=1.5, min_distance=15)
 model.eval()
 with torch.no_grad():
     for images, labels in dataloader:
+        images, labels["prices"] = images.to(device), labels["prices"].to(device)  # Ensure data is on device
         outputs = model(images)
         for i in range(len(images)):
-            predicted_prices = outputs[i].numpy()
+            predicted_prices = outputs[i].cpu().numpy()  # Move to CPU for numpy processing
             predicted_prices = np.clip(predicted_prices * 17.5 + 47.5, 47.5, 65.0)
             image_name = dataset.images[i]
             pattern = labels["pattern"][i]
             troughs, peaks = detect_patterns(predicted_prices, pattern, image_name, threshold=1.5, min_distance=15)
 
-            actual_prices = labels['prices'][i].numpy() * 17.5 + 47.5
+            actual_prices = labels['prices'][i].cpu().numpy() * 17.5 + 47.5
             metrics = time_series_metrics(predicted_prices, actual_prices)
 
             img_path = os.path.join("test_charts/new", image_name)
@@ -275,8 +287,8 @@ with torch.no_grad():
             print(f"Actual prices: {actual_prices[:10]}...{actual_prices[-10:]}")
             print(f"Troughs: {troughs}")
             print(f"Peaks: {peaks}")
-            print(f"Actual troughs: {labels['troughs'][i].numpy()}")
-            print(f"Actual peaks: {labels['peaks'][i].numpy()}")
+            print(f"Actual troughs: {labels['troughs'][i].cpu().numpy()}")
+            print(f"Actual peaks: {labels['peaks'][i].cpu().numpy()}")
             print(
                 f"Time Series Metrics - Autocorrelation (Pred/Actual): {metrics['pred_autocorr']:.3f}/{metrics['actual_autocorr']:.3f}")
             print(f"Standard Deviation (Pred/Actual): {metrics['pred_std']:.3f}/{metrics['actual_std']:.3f}")
