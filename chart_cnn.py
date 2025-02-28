@@ -9,6 +9,7 @@ from PIL import Image
 import numpy as np
 from scipy.ndimage import median_filter
 import skimage.metrics as skmetrics  # For SSIM
+from scipy.stats import mode  # Import mode from scipy.stats
 
 # Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -88,10 +89,11 @@ class ChartDataset(Dataset):
                     original = cv2.imread(original_path, cv2.IMREAD_GRAYSCALE)
                     if original is None:
                         raise ValueError(f"Failed to load original image: {original_path}")
-                    # Edge detection
-                    edges = cv2.Canny(original, 50, 150)
-                    # Hough transform for line detection
-                    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 100, minLineLength=100, maxLineGap=10)
+                    # Edge detection with adjusted thresholds
+                    edges = cv2.Canny(original, 20, 80)  # Further lowered thresholds
+                    # Hough transform for line detection with tuned parameters
+                    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 30, minLineLength=30,
+                                            maxLineGap=30)  # Further adjusted parameters
                     if lines is None:
                         chart_region = original  # Fallback to full image
                     else:
@@ -101,19 +103,21 @@ class ChartDataset(Dataset):
                         vertical_lines = [line[0] for line in lines if abs(line[0][1] - 90) < tolerance]
                         if horizontal_lines and vertical_lines:
                             # Get y-coordinates for horizontal lines
-                            horizontal_y = [y1 for x1, y1, x2, y2 in horizontal_lines if x1 == x2 or abs(y1 - y2) < 5]
-                            if horizontal_y:
-                                spacing_y = np.mode(np.diff(sorted(horizontal_y)))
-                                grid_lines_y = [y for y in horizontal_y if abs(y - min(horizontal_y)) % spacing_y < 5]
+                            horizontal_y = [y1 for x1, y1, x2, y2 in horizontal_lines if abs(y1 - y2) < 5]
+                            if horizontal_y and len(horizontal_y) > 1:
+                                spacing_y = mode(np.diff(sorted(horizontal_y)))[0][0]  # Use scipy.stats.mode
+                                grid_lines_y = [y for y in horizontal_y if
+                                                abs(y - min(horizontal_y)) % spacing_y < 10]  # Increased tolerance
                                 min_y = min(grid_lines_y)
                                 max_y = max(grid_lines_y)
                             else:
                                 min_y, max_y = 0, original.shape[0]
                             # Get x-coordinates for vertical lines
-                            vertical_x = [x1 for x1, y1, x2, y2 in vertical_lines if y1 == y2 or abs(x1 - x2) < 5]
-                            if vertical_x:
-                                spacing_x = np.mode(np.diff(sorted(vertical_x)))
-                                grid_lines_x = [x for x in vertical_x if abs(x - min(vertical_x)) % spacing_x < 5]
+                            vertical_x = [x1 for x1, y1, x2, y2 in vertical_lines if abs(x1 - x2) < 5]
+                            if vertical_x and len(vertical_x) > 1:
+                                spacing_x = mode(np.diff(sorted(vertical_x)))[0][0]  # Use scipy.stats.mode
+                                grid_lines_x = [x for x in vertical_x if
+                                                abs(x - min(vertical_x)) % spacing_x < 10]  # Increased tolerance
                                 min_x = min(grid_lines_x)
                                 max_x = max(grid_lines_x)
                             else:
@@ -210,10 +214,10 @@ model = ChartCNN().to(device)  # Move model to device
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5,
-                                                       patience=15)  # Increased patience
+                                                       patience=20)  # Increased patience
 
 # Training loop with initial loss stabilization and learning rate reset
-for epoch in range(350):  # Increased to 350 epochs
+for epoch in range(400):  # Increased to 400 epochs
     model.train()
     epoch_loss = 0
     for images, labels in dataloader:
@@ -266,15 +270,17 @@ def time_series_metrics(predicted_prices, actual_prices):
 
 
 # Post-process to detect troughs/peaks
-def detect_patterns(prices, pattern, image_name, threshold=1.5, min_distance=15):
+def detect_patterns(prices, pattern, image_name, threshold=1.2, min_distance=12):
     troughs, peaks = [], []
     prices = prices.copy()
-    prices = np.convolve(prices, np.ones(3) / 3, mode='same')
-    for i in range(1, len(prices) - 1):
-        if prices[i] < prices[i - 1] - threshold and prices[i] < prices[i + 1] - threshold:
+    prices = np.convolve(prices, np.ones(5) / 5, mode='same')  # Smoother convolution
+    for i in range(2, len(prices) - 2):  # Adjusted range for smoother detection
+        if prices[i] < prices[i - 1] - threshold and prices[i] < prices[i + 1] - threshold and \
+                prices[i] < prices[i - 2] and prices[i] < prices[i + 2]:
             if not troughs or i - troughs[-1] >= min_distance:
                 troughs.append(i)
-        elif prices[i] > prices[i - 1] + threshold and prices[i] > prices[i + 1] + threshold:
+        elif prices[i] > prices[i - 1] + threshold and prices[i] > prices[i + 1] + threshold and \
+                prices[i] > prices[i - 2] and prices[i] > prices[i + 2]:
             if not peaks or i - peaks[-1] >= min_distance:
                 peaks.append(i)
     # Refine based on pattern and exact positions from uploaded charts
@@ -306,7 +312,7 @@ with torch.no_grad():
             predicted_prices = np.clip(predicted_prices * 17.5 + 47.5, 47.5, 65.0)
             image_name = dataset.images[i]
             pattern = labels["pattern"][i]
-            troughs, peaks = detect_patterns(predicted_prices, pattern, image_name, threshold=1.5, min_distance=15)
+            troughs, peaks = detect_patterns(predicted_prices, pattern, image_name, threshold=1.2, min_distance=12)
 
             actual_prices = labels['prices'][i].cpu().numpy() * 17.5 + 47.5
             metrics = time_series_metrics(predicted_prices, actual_prices)
