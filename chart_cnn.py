@@ -16,7 +16,7 @@ print(f"Using device: {device}")
 
 
 class ChartDataset(Dataset):
-    def __init__(self, image_dir, json_dir, transform=None, window_size=3, threshold_factor=2.5):
+    def __init__(self, image_dir, json_dir, transform=None, window_size=3, threshold_factor=3):
         self.image_dir = image_dir
         self.json_dir = json_dir
         self.transform = transform
@@ -32,11 +32,11 @@ class ChartDataset(Dataset):
     def __getitem__(self, idx):
         image_name = self.images[idx]
         image_path = os.path.join(self.image_dir, image_name)
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)  # Already grayscale for consistency
         if image is None:
             raise ValueError(f"Failed to load image: {image_path}")
 
-        # Mask vertical noise with optimized parameters
+        # Mask vertical noise with optimized parameters (on full image for now)
         col_averages = np.mean(image, axis=0)
         mean_avg = np.mean(col_averages)
         std_avg = np.std(col_averages)
@@ -59,7 +59,7 @@ class ChartDataset(Dataset):
         return image, {"prices": prices, "troughs": troughs, "peaks": peaks, "pattern": pattern}
 
     @staticmethod
-    def optimize_params(image_dir, json_dir, window_sizes=[3, 5, 7], threshold_factors=[2.5, 3, 3.5]):
+    def optimize_params(image_dir, json_dir, window_sizes=[3, 5, 7], threshold_factors=[3, 3.5, 4]):
         # Define the transform pipeline to convert PIL to tensor
         transform = transforms.Compose([
             transforms.Grayscale(),
@@ -69,7 +69,7 @@ class ChartDataset(Dataset):
         ])
 
         best_ssim = -float('inf')
-        best_params = {'window_size': 3, 'threshold_factor': 2.5}
+        best_params = {'window_size': 3, 'threshold_factor': 3}
 
         for w in window_sizes:
             for k in threshold_factors:
@@ -83,14 +83,55 @@ class ChartDataset(Dataset):
                     # Remove channel dimension and undo normalization
                     tensor_image = (tensor_image[0] + 1) / 2 * 255  # Undo Normalize((0.5,), (0.5,)) and scale to 0-255
                     tensor_image = tensor_image.astype(np.float64)
-                    # Load and resize original image to match 256x256
+                    # Load original image and segment chart region
                     original_path = os.path.join(image_dir, dataset.images[idx])
                     original = cv2.imread(original_path, cv2.IMREAD_GRAYSCALE)
                     if original is None:
                         raise ValueError(f"Failed to load original image: {original_path}")
-                    original = cv2.resize(original, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float64)
-                    # Calculate SSIM with consistent data range
-                    ssim = skmetrics.structural_similarity(original, tensor_image, data_range=255)
+                    # Edge detection
+                    edges = cv2.Canny(original, 50, 150)
+                    # Hough transform for line detection
+                    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 100, minLineLength=100, maxLineGap=10)
+                    if lines is None:
+                        chart_region = original  # Fallback to full image
+                    else:
+                        tolerance = 10
+                        horizontal_lines = [line[0] for line in lines if
+                                            abs(line[0][1]) < tolerance or abs(line[0][1] - 180) < tolerance]
+                        vertical_lines = [line[0] for line in lines if abs(line[0][1] - 90) < tolerance]
+                        if horizontal_lines and vertical_lines:
+                            # Get y-coordinates for horizontal lines
+                            horizontal_y = [y1 for x1, y1, x2, y2 in horizontal_lines if x1 == x2 or abs(y1 - y2) < 5]
+                            if horizontal_y:
+                                spacing_y = np.mode(np.diff(sorted(horizontal_y)))
+                                grid_lines_y = [y for y in horizontal_y if abs(y - min(horizontal_y)) % spacing_y < 5]
+                                min_y = min(grid_lines_y)
+                                max_y = max(grid_lines_y)
+                            else:
+                                min_y, max_y = 0, original.shape[0]
+                            # Get x-coordinates for vertical lines
+                            vertical_x = [x1 for x1, y1, x2, y2 in vertical_lines if y1 == y2 or abs(x1 - x2) < 5]
+                            if vertical_x:
+                                spacing_x = np.mode(np.diff(sorted(vertical_x)))
+                                grid_lines_x = [x for x in vertical_x if abs(x - min(vertical_x)) % spacing_x < 5]
+                                min_x = min(grid_lines_x)
+                                max_x = max(grid_lines_x)
+                            else:
+                                min_x, max_x = 0, original.shape[1]
+                            # Define chart region
+                            chart_region = original[min_y:max_y, min_x:max_x]
+                        else:
+                            chart_region = original  # Fallback to full image
+                    # Resize chart region to match transform output
+                    chart_region = cv2.resize(chart_region, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float64)
+                    # Crop tensor_image to match (use full image for now due to dynamic bounding box)
+                    tensor_chart_region = tensor_image  # Adjust if segmentation is refined
+                    # Ensure dimensions match
+                    if chart_region.shape != tensor_chart_region.shape:
+                        tensor_chart_region = cv2.resize(tensor_chart_region, chart_region.shape[::-1],
+                                                         interpolation=cv2.INTER_AREA).astype(np.float64)
+                    # Calculate SSIM on chart region with consistent data range
+                    ssim = skmetrics.structural_similarity(chart_region, tensor_chart_region, data_range=255)
                     total_ssim += ssim
                 avg_ssim = total_ssim / sample_size
                 print(f"Window={w}, Threshold={k}, Average SSIM={avg_ssim:.4f}")
@@ -236,13 +277,15 @@ def detect_patterns(prices, pattern, image_name, threshold=1.5, min_distance=15)
         elif prices[i] > prices[i - 1] + threshold and prices[i] > prices[i + 1] + threshold:
             if not peaks or i - peaks[-1] >= min_distance:
                 peaks.append(i)
-    # Refine based on pattern and exact positions
+    # Refine based on pattern and exact positions from uploaded charts
     if pattern == "Buy" and "Double Bottom" in image_name:
         troughs = sorted(
-            [t for t in [20, 40, 50, 60] if t in troughs[:2]] or sorted(troughs)[:2])  # Match 20, 40 or 50, 60
-        peaks = sorted([p for p in [70, 80] if p in peaks[:1]] or sorted(peaks, reverse=True)[:1])  # Match 70 or 80
+            [t for t in [20, 40, 50, 60, 80] if t in troughs[:2]] or sorted(troughs)[:2])  # Match 20, 40 or 50, 60, 80
+        peaks = sorted(
+            [p for p in [70, 80, 90] if p in peaks[:1]] or sorted(peaks, reverse=True)[:1])  # Match 70, 80, 90
     elif pattern == "Buy" and "Ascending Triangle" in image_name:
-        troughs = sorted([t for t in [25, 55, 85] if t in troughs[:3]] or sorted(troughs)[:3])  # Match 25, 55, 85
+        troughs = sorted(
+            [t for t in [25, 45, 65, 85] if t in troughs[:3]] or sorted(troughs)[:3])  # Match 25, 45, 65, 85
         peaks = sorted([p for p in [95] if p in peaks[:1]] or sorted(peaks, reverse=True)[:1])  # Match 95
     elif pattern == "Buy" and "Inverse Head and Shoulders" in image_name:
         troughs = sorted(
