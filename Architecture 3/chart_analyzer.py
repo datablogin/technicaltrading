@@ -280,30 +280,27 @@ def detect_trend(prices):
 
 
 def detect_technical_patterns(prices):
-    """Main function to detect all technical patterns with confidence scores"""
+    """Balanced pattern detection with adjusted thresholds"""
     results = {}
     confidence_scores = {}
 
-    # Use different window sizes for multi-scale detection
-    window_sizes = [3, 5, 8]
-
     # Store all detected patterns with confidence scores
-    for window in window_sizes:
+    for window in [3, 5, 8]:  # Multiple window sizes for different scales
         prominence = 0.02 if window == 3 else (0.04 if window == 5 else 0.06)
-        peaks, troughs, peak_props, trough_props = detect_peaks_and_troughs(prices, prominence=prominence,
-                                                                            distance=window)
+
+        # Get peaks and troughs
+        peaks, troughs, _, _ = detect_peaks_and_troughs(prices, prominence=prominence, distance=window)
 
         print(f"Window size {window}: Found {len(peaks)} peaks and {len(troughs)} troughs")
 
-        # Check patterns and assign confidence scores
-        double_bottom_conf = check_double_bottom_confidence(prices, peaks, troughs)
-        if double_bottom_conf > 0:
-            confidence_scores['Double Bottom'] = max(confidence_scores.get('Double Bottom', 0), double_bottom_conf)
+        # Check patterns with enhanced detectors
+        db_conf = check_double_bottom_confidence(prices, peaks, troughs)
+        if db_conf > 0:
+            confidence_scores['Double Bottom'] = max(confidence_scores.get('Double Bottom', 0), db_conf)
 
-        head_shoulders_conf = check_head_shoulders_confidence(prices, peaks, troughs)
-        if head_shoulders_conf > 0:
-            confidence_scores['Head and Shoulders'] = max(confidence_scores.get('Head and Shoulders', 0),
-                                                          head_shoulders_conf)
+        hs_conf = check_head_shoulders_confidence(prices, peaks, troughs)
+        if hs_conf > 0:
+            confidence_scores['Head and Shoulders'] = max(confidence_scores.get('Head and Shoulders', 0), hs_conf)
 
         triangle_type, triangle_conf = check_triangle_confidence(prices, peaks, troughs)
         if triangle_type and triangle_conf > 0:
@@ -313,13 +310,42 @@ def detect_technical_patterns(prices):
     trend, trend_conf = check_trend_confidence(prices)
     confidence_scores[f'Trend: {trend}'] = trend_conf
 
-    # Select only the patterns with sufficient confidence
-    threshold = 0.6  # Minimum confidence to report a pattern
+    # Use pattern-specific thresholds with bias correction
+    # Make double bottom detection harder, ascending triangle detection easier
+    thresholds = {
+        'Double Bottom': 0.78,  # Higher threshold to reduce false positives
+        'Head and Shoulders': 0.60,  # Medium threshold
+        'Ascending Triangle': 0.45,  # Lower threshold to increase detection
+        'Descending Triangle': 0.60,
+        'Symmetric Triangle': 0.60
+    }
+
+    # If multiple patterns exceed thresholds, prefer certain patterns based on confidence ratios
+    pattern_priorities = {
+        'Ascending Triangle': 1.2,  # Boost ascending triangle confidence
+        'Head and Shoulders': 1.1,  # Slightly boost head and shoulders
+        'Double Bottom': 0.9  # Slightly reduce double bottom
+    }
+
+    # Apply bias correction to confidence scores
+    adjusted_scores = {}
     for pattern, conf in confidence_scores.items():
-        if conf >= threshold:
+        if "Trend" in pattern:
+            adjusted_scores[pattern] = conf
+        elif pattern in pattern_priorities:
+            adjusted_scores[pattern] = conf * pattern_priorities[pattern]
+        else:
+            adjusted_scores[pattern] = conf
+
+    # Select patterns meeting thresholds
+    for pattern, conf in adjusted_scores.items():
+        if "Trend" in pattern:
+            # Always include trend
+            results[pattern] = conf
+        elif pattern in thresholds and conf >= thresholds[pattern]:
             results[pattern] = conf
 
-    # If multiple conflicting patterns, keep only the highest confidence one
+    # If we have overlapping patterns, use the highest adjusted confidence
     pattern_groups = [
         ['Double Bottom', 'Head and Shoulders'],
         ['Ascending Triangle', 'Descending Triangle', 'Symmetric Triangle']
@@ -329,7 +355,7 @@ def detect_technical_patterns(prices):
         patterns_in_group = [p for p in group if p in results]
         if len(patterns_in_group) > 1:
             # Keep only the highest confidence pattern in the group
-            best_pattern = max(patterns_in_group, key=lambda p: results[p])
+            best_pattern = max(patterns_in_group, key=lambda p: adjusted_scores[p])
             for p in patterns_in_group:
                 if p != best_pattern:
                     results.pop(p, None)
@@ -337,105 +363,282 @@ def detect_technical_patterns(prices):
     return results
 
 
+def simpler_pattern_detection(prices):
+    """Simplified pattern detection focusing on core pattern characteristics"""
+    # Calculate basic metrics
+    price_range = np.max(prices) - np.min(prices)
+
+    # Get basic peaks and troughs with consistent parameters
+    peaks, _ = find_peaks(prices, prominence=0.03 * price_range, distance=3)
+    troughs, _ = find_peaks(-prices, prominence=0.03 * price_range, distance=3)
+
+    # Calculate peak and trough heights relative to price range
+    peak_heights = prices[peaks] / price_range
+    trough_depths = (np.max(prices) - prices[troughs]) / price_range
+
+    # 1. Double Bottom Detection (two similar lows with peak between)
+    double_bottom_score = 0.0
+    if len(troughs) >= 2:
+        for i in range(len(troughs) - 1):
+            for j in range(i + 1, len(troughs)):
+                t1, t2 = troughs[i], troughs[j]
+
+                # Skip if troughs are too close
+                if t2 - t1 < 10:
+                    continue
+
+                # Check if troughs are at similar levels
+                trough1_val = prices[t1]
+                trough2_val = prices[t2]
+                bottom_diff = abs(trough1_val - trough2_val) / price_range
+
+                # If bottoms are similar (within 5% of price range)
+                if bottom_diff < 0.05:
+                    # Look for peak between the troughs
+                    peaks_between = [p for p in peaks if t1 < p < t2]
+                    if peaks_between:
+                        middle_peak = peaks_between[np.argmax(prices[peaks_between])]
+                        peak_height = (prices[middle_peak] - min(trough1_val, trough2_val)) / price_range
+
+                        # If peak is high enough to be significant
+                        if peak_height > 0.15:
+                            score = (1.0 - bottom_diff / 0.05) * 0.6 + min(1.0, peak_height / 0.3) * 0.4
+                            double_bottom_score = max(double_bottom_score, score)
+
+    # 2. Head and Shoulders (three peaks, middle higher)
+    head_shoulders_score = 0.0
+    if len(peaks) >= 3:
+        for i in range(len(peaks) - 2):
+            p1, p2, p3 = peaks[i], peaks[i + 1], peaks[i + 2]
+
+            # Skip if peaks are too close
+            if p2 - p1 < 5 or p3 - p2 < 5:
+                continue
+
+            # Get peak heights
+            left_shoulder = prices[p1]
+            head = prices[p2]
+            right_shoulder = prices[p3]
+
+            # Check if middle peak is highest
+            if head > left_shoulder and head > right_shoulder:
+                # Check if shoulders are at similar heights
+                shoulder_diff = abs(left_shoulder - right_shoulder) / price_range
+
+                # If shoulders are similar (within 10% of price range)
+                if shoulder_diff < 0.1:
+                    # Check if head is significantly higher
+                    head_prominence = (head - max(left_shoulder, right_shoulder)) / price_range
+
+                    if head_prominence > 0.1:
+                        score = (1.0 - shoulder_diff / 0.1) * 0.6 + min(1.0, head_prominence / 0.2) * 0.4
+                        head_shoulders_score = max(head_shoulders_score, score)
+
+    # 3. Ascending Triangle (flat top, rising bottoms)
+    ascending_triangle_score = 0.0
+    if len(peaks) >= 2 and len(troughs) >= 2:
+        # For a simple approach, check if:
+        # 1. Top peaks are flat (similar heights)
+        top_peaks = sorted(peaks, key=lambda p: prices[p], reverse=True)[:3]
+        if len(top_peaks) >= 2:
+            top_values = prices[top_peaks]
+            top_diff = (np.max(top_values) - np.min(top_values)) / price_range
+
+            # If tops are relatively flat (within 10% of price range)
+            if top_diff < 0.1:
+                # 2. Check if troughs are rising
+                sorted_troughs = sorted(troughs)
+                if len(sorted_troughs) >= 3:
+                    trough_values = prices[sorted_troughs]
+
+                    # Calculate simple linear trend of trough values
+                    trough_indices = np.arange(len(trough_values))
+                    trough_slope, _ = np.polyfit(trough_indices, trough_values, 1)
+
+                    # If troughs have positive slope
+                    if trough_slope > 0:
+                        score = (1.0 - top_diff / 0.1) * 0.5 + min(1.0, trough_slope * 10) * 0.5
+                        ascending_triangle_score = max(ascending_triangle_score, score)
+
+    # Determine the most confident pattern
+    scores = {
+        'Double Bottom': double_bottom_score,
+        'Head and Shoulders': head_shoulders_score,
+        'Ascending Triangle': ascending_triangle_score
+    }
+
+    # Apply threshold and balance patterns
+    balanced_scores = {
+        # Slightly adjust to prevent double bottom bias
+        'Double Bottom': double_bottom_score * 0.9,
+        'Head and Shoulders': head_shoulders_score * 1.1,
+        'Ascending Triangle': ascending_triangle_score * 1.15  # Boost ascending triangle
+    }
+
+    # Select patterns meeting minimum threshold
+    results = {}
+    min_threshold = 0.55
+    for pattern, score in balanced_scores.items():
+        if score >= min_threshold:
+            results[pattern] = score
+
+    # Add trend info
+    trend, trend_conf = check_trend_confidence(prices)
+    results[f'Trend: {trend}'] = trend_conf
+
+    return results
+
 # Example confidence check function
 def check_double_bottom_confidence(prices, peaks, troughs):
+    """More stringent Double Bottom detector to reduce false positives"""
     if len(troughs) < 2 or len(peaks) < 1:
         return 0.0
 
     max_confidence = 0.0
+    sorted_troughs = np.array(sorted(troughs))
 
-    for i in range(len(troughs) - 1):
-        if i + 1 >= len(troughs):
-            continue
+    # Try all possible pairs of troughs
+    for i in range(len(sorted_troughs) - 1):
+        for j in range(i + 1, len(sorted_troughs)):
+            t1, t2 = sorted_troughs[i], sorted_troughs[j]
 
-        t1, t2 = troughs[i], troughs[i + 1]
+            # Troughs should be reasonably far apart
+            if t2 - t1 < 10 or t2 - t1 > len(prices) // 2:
+                continue
 
-        # Find peak between the two troughs
-        middle_peaks = [p for p in peaks if t1 < p < t2]
-
-        if middle_peaks:
-            middle_peak = middle_peaks[0]
-
-            # Check troughs similarity
+            # Get values at these troughs
             trough1_val = prices[t1]
             trough2_val = prices[t2]
-            peak_val = prices[middle_peak]
 
+            # Check if troughs are at similar price levels (critical for double bottom)
             trough_diff = abs(trough1_val - trough2_val)
             trough_avg = (trough1_val + trough2_val) / 2
+            bottom_similarity = 1.0 - min(1.0, trough_diff / (trough_avg + 0.0001) / 0.05)
 
-            # Calculate confidence based on criteria
-            similarity = 1.0 - min(1.0, trough_diff / (trough_avg + 0.0001) / 0.2)
-            height = min(1.0, (peak_val - trough_avg) / trough_avg / 0.1)
-            spacing = min(1.0, (t2 - t1) / 20)  # Better if troughs are well-spaced
+            # If bottoms aren't similar, this isn't a double bottom
+            if bottom_similarity < 0.7:
+                continue
 
-            confidence = (similarity * 0.5 + height * 0.3 + spacing * 0.2)
+            # Find middle peak between troughs
+            peaks_between = [p for p in peaks if t1 < p < t2]
+            if not peaks_between:
+                continue
+
+            # Use highest peak between troughs
+            middle_peak = peaks_between[np.argmax(prices[peaks_between])]
+            peak_val = prices[middle_peak]
+
+            # Middle peak should be significantly higher than troughs
+            peak_height = (peak_val - trough_avg) / trough_avg
+            peak_significance = min(1.0, peak_height / 0.1)
+
+            if peak_significance < 0.5:  # Peak must be significantly higher
+                continue
+
+            # Middle peak should be roughly centered
+            position_ratio = (middle_peak - t1) / (t2 - t1)
+            position_score = 1.0 - min(1.0, abs(0.5 - position_ratio) / 0.2)
+
+            # Check for upward movement after the second trough
+            breakout_score = 0.0
+            if t2 < len(prices) - 5:
+                post_bottom = prices[t2:]
+                if len(post_bottom) > 0 and np.max(post_bottom) > peak_val:
+                    breakout_score = 0.3
+
+            # Calculate overall confidence with strict criteria
+            confidence = (
+                    bottom_similarity * 0.4 +
+                    peak_significance * 0.3 +
+                    position_score * 0.2 +
+                    breakout_score * 0.1
+            )
+
+            # Must have VERY similar bottoms and good peak height
+            if bottom_similarity > 0.9 and peak_significance > 0.7:
+                confidence = min(1.0, confidence * 1.1)
+
             max_confidence = max(max_confidence, confidence)
 
     return max_confidence
 
 
 def check_head_shoulders_confidence(prices, peaks, troughs):
-    """Calculate confidence score for Head and Shoulders pattern"""
+    """Improved Head and Shoulders detector with specific pattern features"""
     if len(peaks) < 3:
         return 0.0
 
     max_confidence = 0.0
 
-    # Need at least 3 consecutive peaks
+    # Find sequences of 3 consecutive peaks that could form H&S
     for i in range(len(peaks) - 2):
-        if i + 2 >= len(peaks):
-            continue
-
         p1, p2, p3 = peaks[i], peaks[i + 1], peaks[i + 2]
 
-        # Check for minimum distance between peaks
-        if p2 - p1 < 2 or p3 - p2 < 2:
+        # Ensure proper spacing between peaks
+        if p2 - p1 < 5 or p3 - p2 < 5:  # Need sufficient space between peaks
             continue
 
-        # Get values at each peak
+        # Get peak values
         left_shoulder = prices[p1]
         head = prices[p2]
         right_shoulder = prices[p3]
 
-        # Check if middle peak (head) is higher than shoulders
+        # Check core H&S criteria: middle peak must be highest
         if head > left_shoulder and head > right_shoulder:
-            # Calculate metrics for confidence
-
-            # 1. Shoulder symmetry (how similar are the shoulders)
+            # Calculate shoulder symmetry (should be similar heights)
             shoulder_diff = abs(left_shoulder - right_shoulder)
             shoulder_avg = (left_shoulder + right_shoulder) / 2
-            shoulder_symmetry = 1.0 - min(1.0, shoulder_diff / (shoulder_avg + 0.0001) / 0.2)
+            shoulder_symmetry = 1.0 - min(1.0, shoulder_diff / (shoulder_avg + 0.0001) / 0.15)
 
-            # 2. Head prominence (how much higher is the head than the shoulders)
+            # Check head prominence (head should be significantly higher than shoulders)
             head_height = (head - shoulder_avg) / shoulder_avg
-            head_prominence = min(1.0, head_height / 0.1)  # Cap at 1.0
+            head_prominence = min(1.0, head_height / 0.15)
 
-            # 3. Pattern spacing (evenly spaced peaks are better)
-            spacing_ratio = (p3 - p2) / (p2 - p1)
-            if spacing_ratio > 1:
-                spacing_ratio = 1 / spacing_ratio  # Convert to 0-1 range
-            spacing_quality = min(1.0, spacing_ratio / 0.7)  # Higher score for more even spacing
+            # Find troughs between peaks for neckline
+            left_trough_idx = None
+            right_trough_idx = None
 
-            # 4. Check for neckline (shoulders should connect at similar level)
-            # Find troughs between peaks
-            trough1 = [t for t in troughs if p1 < t < p2]
-            trough2 = [t for t in troughs if p2 < t < p3]
+            # Find single troughs between peaks
+            for t in troughs:
+                if p1 < t < p2 and (left_trough_idx is None or prices[t] < prices[left_trough_idx]):
+                    left_trough_idx = t
 
-            neckline_score = 0.5  # Default if we can't find troughs
-            if trough1 and trough2:
-                t1, t2 = trough1[0], trough2[0]
-                trough_diff = abs(prices[t1] - prices[t2])
-                trough_avg = (prices[t1] + prices[t2]) / 2
-                neckline_score = 1.0 - min(1.0, trough_diff / (trough_avg + 0.0001) / 0.1)
+            for t in troughs:
+                if p2 < t < p3 and (right_trough_idx is None or prices[t] < prices[right_trough_idx]):
+                    right_trough_idx = t
 
-            # Calculate overall confidence with weighted components
+            # Check for neckline (should be relatively flat)
+            neckline_score = 0.0
+            if left_trough_idx is not None and right_trough_idx is not None:
+                neckline_diff = abs(prices[left_trough_idx] - prices[right_trough_idx])
+                neckline_avg = (prices[left_trough_idx] + prices[right_trough_idx]) / 2
+                neckline_score = 1.0 - min(1.0, neckline_diff / (neckline_avg + 0.0001) / 0.1)
+
+            # Check for downward breakout after pattern
+            breakout_score = 0.0
+            if p3 < len(prices) - 5:
+                post_pattern = prices[p3:min(p3 + 10, len(prices))]
+
+                if left_trough_idx is not None and right_trough_idx is not None:
+                    # Use the higher of the two troughs as neckline level
+                    neckline_level = max(prices[left_trough_idx], prices[right_trough_idx])
+
+                    # Check if price drops below neckline after pattern
+                    if min(post_pattern) < neckline_level:
+                        breakout_score = 0.3  # Bonus for having a breakout
+
+            # Calculate overall confidence
             confidence = (
                     shoulder_symmetry * 0.3 +
                     head_prominence * 0.3 +
-                    spacing_quality * 0.2 +
-                    neckline_score * 0.2
+                    neckline_score * 0.3 +
+                    breakout_score * 0.1
             )
+
+            # Apply stricter criteria - must have good symmetry AND prominence
+            if shoulder_symmetry > 0.7 and head_prominence > 0.7:
+                confidence *= 1.2  # Boost confidence
+                confidence = min(1.0, confidence)  # Cap at 1.0
 
             max_confidence = max(max_confidence, confidence)
 
@@ -443,74 +646,101 @@ def check_head_shoulders_confidence(prices, peaks, troughs):
 
 
 def check_triangle_confidence(prices, peaks, troughs):
-    """Enhanced triangle detector specifically tuned for chart images"""
+    """Enhanced triangle detector specifically calibrated for ascending triangles"""
     if len(peaks) < 2 or len(troughs) < 2:
         return None, 0.0
 
-    # Check for price breakout pattern (characteristic of your Ascending Triangle charts)
-    # This looks for a significant price increase near the end of the chart
+    # Check specifically for ascending triangle characteristics
+
+    # 1. Check for breakout at the end of the pattern (critical for ascending triangles)
     breakout_detected = False
     breakout_score = 0.0
 
     if len(prices) > 20:
-        # Look at the last 20% of the chart
+        # Look at the last 20% vs previous 20% of data
         breakout_idx = int(len(prices) * 0.8)
-        pre_breakout = np.mean(prices[breakout_idx - 10:breakout_idx])
-        post_breakout = np.mean(prices[breakout_idx:])
+        pre_breakout = prices[breakout_idx - 10:breakout_idx]
+        post_breakout = prices[breakout_idx:]
 
-        # Calculate percentage increase
-        pct_increase = (post_breakout - pre_breakout) / pre_breakout
+        if len(pre_breakout) > 0 and len(post_breakout) > 0:
+            pre_avg = np.mean(pre_breakout)
+            post_avg = np.mean(post_breakout)
 
-        if pct_increase > 0.1:  # 10% increase threshold
-            breakout_detected = True
-            breakout_score = min(1.0, pct_increase / 0.2)  # Cap at 1.0
+            # Calculate percentage increase
+            if pre_avg > 0:  # Prevent division by zero
+                pct_increase = (post_avg - pre_avg) / pre_avg
 
-    # Check for flat resistance (tops) and rising support (bottoms)
-    if len(peaks) >= 2 and len(troughs) >= 2:
-        # Sort peaks and troughs by time (index)
-        sorted_peaks = sorted(peaks)
+                # Significant upward breakout is critical for ascending triangle
+                if pct_increase > 0.05:  # Lower threshold to 5%
+                    breakout_detected = True
+                    breakout_score = min(1.0, pct_increase / 0.15)  # Higher sensitivity
+
+    # 2. Check for multiple tests of resistance level (flat top)
+    if len(peaks) >= 2:
+        # Use highest peaks to define resistance
+        peak_values = prices[peaks]
+        top_peaks = peaks[np.argsort(peak_values)[-3:]]  # Get indices of 3 highest peaks
+
+        if len(top_peaks) >= 2:
+            top_values = prices[top_peaks]
+            top_std = np.std(top_values)
+            top_mean = np.mean(top_values)
+
+            # Check if tops are at similar levels (flat resistance)
+            if top_mean > 0:
+                resistance_flatness = 1.0 - min(1.0, top_std / top_mean / 0.05)
+            else:
+                resistance_flatness = 0.0
+        else:
+            resistance_flatness = 0.0
+    else:
+        resistance_flatness = 0.0
+
+    # 3. Check for rising support (higher lows)
+    if len(troughs) >= 2:
+        # Sort troughs by time
         sorted_troughs = sorted(troughs)
-
-        # Get values
-        peak_values = prices[sorted_peaks]
         trough_values = prices[sorted_troughs]
 
-        # Check if tops are relatively flat
-        peak_std = np.std(peak_values)
-        peak_mean = np.mean(peak_values)
+        # Check if later troughs are higher than earlier ones
+        if len(trough_values) >= 2:
+            # Calculate if there's an upward trend in troughs
+            trough_diff = []
+            for i in range(1, len(trough_values)):
+                trough_diff.append(trough_values[i] - trough_values[i - 1])
 
-        # Calculate coefficient of variation (lower means flatter tops)
-        if peak_mean > 0:
-            peak_cv = peak_std / peak_mean
-            flat_top_score = 1.0 - min(1.0, peak_cv / 0.1)
-        else:
-            flat_top_score = 0.0
-
-        # Check if bottoms are rising
-        if len(sorted_troughs) >= 2:
-            # Create arrays for trend analysis
-            trough_indices = np.array(sorted_troughs)
-
-            # Calculate trend of troughs
-            if len(trough_indices) > 1:
-                trough_trend = np.polyfit(range(len(trough_values)), trough_values, 1)[0]
-                rising_bottom_score = min(1.0, max(0.0, trough_trend / 0.2))
+            # Rising bottoms have positive differences
+            positive_diffs = sum(1 for d in trough_diff if d > 0)
+            if positive_diffs / max(1, len(trough_diff)) > 0.5:  # More than half are rising
+                rising_support = True
+                rising_support_score = positive_diffs / max(1, len(trough_diff))
             else:
-                rising_bottom_score = 0.0
+                rising_support = False
+                rising_support_score = 0.0
+        else:
+            rising_support = False
+            rising_support_score = 0.0
+    else:
+        rising_support = False
+        rising_support_score = 0.0
 
-            # Check for Ascending Triangle
-            if (flat_top_score > 0.6 and rising_bottom_score > 0.3) or (flat_top_score > 0.5 and breakout_detected):
-                # Calculate confidence score
-                confidence = (
-                        flat_top_score * 0.4 +
-                        rising_bottom_score * 0.3 +
-                        (breakout_score if breakout_detected else 0.0) * 0.3
-                )
+    # Calculate overall confidence for ascending triangle
+    if (resistance_flatness > 0.6 and rising_support) or (resistance_flatness > 0.5 and breakout_detected):
+        triangle_confidence = (
+                resistance_flatness * 0.4 +
+                rising_support_score * 0.3 +
+                breakout_score * 0.3
+        )
 
-                if confidence > 0.6:
-                    return "Ascending Triangle", confidence
+        # Boost confidence if all three criteria are met
+        if resistance_flatness > 0.6 and rising_support and breakout_detected:
+            triangle_confidence *= 1.2
+            triangle_confidence = min(1.0, triangle_confidence)  # Cap at 1.0
 
-    # If no specific triangle pattern is found
+        if triangle_confidence > 0.5:  # Lower threshold from 0.6 to 0.5
+            return "Ascending Triangle", triangle_confidence
+
+    # If not an ascending triangle, return none
     return None, 0.0
 
 
@@ -789,6 +1019,51 @@ def analyze_chart(image_path, model_path="chart_model.pth", image_dir="test_char
     return predicted_prices, patterns
 
 
+def draw_dashed_line(img, pt1, pt2, color, thickness=1, dash_length=8, gap_length=8):
+    """
+    Draw a dashed line on an image
+
+    Parameters:
+    - img: Image to draw on
+    - pt1: First point (x1, y1)
+    - pt2: Second point (x2, y2)
+    - color: Line color (B, G, R)
+    - thickness: Line thickness
+    - dash_length: Length of each dash
+    - gap_length: Length of gaps between dashes
+    """
+    dist = np.sqrt((pt2[0] - pt1[0]) ** 2 + (pt2[1] - pt1[1]) ** 2)
+    if dist == 0:
+        return img
+
+    dashes = int(dist / (dash_length + gap_length))
+    if dashes == 0:
+        cv2.line(img, pt1, pt2, color, thickness)
+        return img
+
+    unit_x = (pt2[0] - pt1[0]) / dist
+    unit_y = (pt2[1] - pt1[1]) / dist
+
+    x1, y1 = pt1
+    for i in range(dashes):
+        # Draw the dash
+        x2 = int(x1 + dash_length * unit_x)
+        y2 = int(y1 + dash_length * unit_y)
+        cv2.line(img, (int(x1), int(y1)), (x2, y2), color, thickness)
+
+        # Move to the start of the next dash
+        x1 = x1 + (dash_length + gap_length) * unit_x
+        y1 = y1 + (dash_length + gap_length) * unit_y
+
+    return img
+
+
+# Then, modify the visualize_results function where the LINE_DASH error occurs
+# Replace the line:
+# cv2.line(img, (x1, y1), (x2, y2), (0, 255, 255), 2, cv2.LINE_DASH)
+# With:
+# draw_dashed_line(img, (x1, y1), (x2, y2), (0, 255, 255), 2)
+
 def visualize_results(image, prices, patterns, chart_box, output_filename="analyzed_chart.png"):
     """Enhanced visualization with pattern-specific markers and trend lines"""
     vis_image = image.copy()
@@ -945,10 +1220,10 @@ def visualize_results(image, prices, patterns, chart_box, output_filename="analy
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
                             # Draw neckline
-                            cv2.line(vis_image,
+                            draw_dashed_line(vis_image,
                                      (px(first_bottom_idx), py(prices[middle_peak_idx])),
                                      (px(last_bottom_idx), py(prices[middle_peak_idx])),
-                                     (0, 255, 255), 2, cv2.LINE_DASH)
+                                     (0, 255, 255), 2)
 
                             # Draw breakout point if it exists
                             if prices[-1] > prices[middle_peak_idx]:

@@ -186,14 +186,14 @@ def generate_head_and_shoulders(length=100, volatility=0.01, seed=None):
     pattern = add_noise(pattern, volatility)
     pattern = smooth_prices(pattern)
 
-    # Identify key points
-    left_shoulder_idx = segment_len
-    head_idx = 3 * segment_len
-    right_shoulder_idx = 5 * segment_len
+    # Identify key points - ensure they're within bounds
+    left_shoulder_idx = min(segment_len, length - 1)
+    head_idx = min(3 * segment_len, length - 1)
+    right_shoulder_idx = min(5 * segment_len - 1, length - 1)  # Subtract 1 to ensure in-bounds
 
     # Find neckline points
-    left_trough_idx = 2 * segment_len
-    right_trough_idx = 4 * segment_len
+    left_trough_idx = min(2 * segment_len, length - 1)
+    right_trough_idx = min(4 * segment_len, length - 1)
 
     return pattern[:length], [left_trough_idx, right_trough_idx], [left_shoulder_idx, head_idx, right_shoulder_idx]
 
@@ -207,9 +207,13 @@ def save_chart(prices, troughs, peaks, pattern_name, index, days=100):
     # Add grid
     plt.grid(True, linestyle='--', alpha=0.7)
 
+    # Make sure indices are within valid range
+    valid_peaks = [p for p in peaks if p < len(prices)]
+    valid_troughs = [t for t in troughs if t < len(prices)]
+
     # Mark peaks and troughs
-    plt.scatter(peaks, prices[peaks], color='green', marker='^', s=100)
-    plt.scatter(troughs, prices[troughs], color='red', marker='v', s=100)
+    plt.scatter(valid_peaks, prices[valid_peaks], color='green', marker='^', s=100)
+    plt.scatter(valid_troughs, prices[valid_troughs], color='red', marker='v', s=100)
 
     # Add title and labels
     plt.title(f"Oil - {pattern_name} (Buy)", fontsize=16)
@@ -228,8 +232,8 @@ def save_chart(prices, troughs, peaks, pattern_name, index, days=100):
     # Save label
     label = {
         "prices": prices.tolist(),
-        "troughs": troughs.tolist(),
-        "peaks": peaks.tolist(),
+        "troughs": valid_troughs,  # Use the filtered values
+        "peaks": valid_peaks,  # Use the filtered values
         "pattern": pattern_name
     }
 
