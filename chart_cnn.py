@@ -10,6 +10,7 @@ import numpy as np
 from scipy.ndimage import median_filter
 import skimage.metrics as skmetrics  # For SSIM
 from scipy.stats import mode  # Import mode from scipy.stats
+from scipy.signal import find_peaks  # Import find_peaks for peak detection
 
 # Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,11 +90,22 @@ class ChartDataset(Dataset):
                     original = cv2.imread(original_path, cv2.IMREAD_GRAYSCALE)
                     if original is None:
                         raise ValueError(f"Failed to load original image: {original_path}")
-                    # Edge detection with adjusted thresholds
-                    edges = cv2.Canny(original, 20, 80)  # Further lowered thresholds
+                    # Preprocessing: Apply Gaussian blur
+                    blurred = cv2.GaussianBlur(original, (3, 3), 0)
+                    # Compute gradient magnitude
+                    Gx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+                    Gy = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+                    magnitude = cv2.magnitude(Gx, Gy)
+                    magnitude_uint8 = cv2.convertScaleAbs(magnitude)
+                    # Percentile-based thresholds
+                    flattened = magnitude_uint8.ravel()
+                    high_threshold = np.percentile(flattened, 90)
+                    low_threshold = np.percentile(flattened, 50)
+                    # Edge detection with optimized thresholds
+                    edges = cv2.Canny(blurred, low_threshold, high_threshold)
                     # Hough transform for line detection with tuned parameters
                     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 30, minLineLength=30,
-                                            maxLineGap=30)  # Further adjusted parameters
+                                            maxLineGap=30)  # Adjusted parameters
                     if lines is None:
                         chart_region = original  # Fallback to full image
                     else:
@@ -270,34 +282,32 @@ def time_series_metrics(predicted_prices, actual_prices):
 
 
 # Post-process to detect troughs/peaks
-def detect_patterns(prices, pattern, image_name, threshold=1.2, min_distance=12):
+def detect_patterns(prices, pattern, image_name, height_threshold=0.5, prominence_threshold=0.5):
     troughs, peaks = [], []
     prices = prices.copy()
-    prices = np.convolve(prices, np.ones(5) / 5, mode='same')  # Smoother convolution
-    for i in range(2, len(prices) - 2):  # Adjusted range for smoother detection
-        if prices[i] < prices[i - 1] - threshold and prices[i] < prices[i + 1] - threshold and \
-                prices[i] < prices[i - 2] and prices[i] < prices[i + 2]:
-            if not troughs or i - troughs[-1] >= min_distance:
-                troughs.append(i)
-        elif prices[i] > prices[i - 1] + threshold and prices[i] > prices[i + 1] + threshold and \
-                prices[i] > prices[i - 2] and prices[i] > prices[i + 2]:
-            if not peaks or i - peaks[-1] >= min_distance:
-                peaks.append(i)
+    # Use scipy.signal.find_peaks with prominence filtering
+    peak_indices, peak_properties = find_peaks(prices, height=height_threshold, prominence=prominence_threshold)
+    trough_indices, _ = find_peaks(-prices, height=height_threshold,
+                                   prominence=prominence_threshold)  # Invert for troughs
+
+    peaks = peak_indices.tolist()
+    troughs = trough_indices.tolist()
+
     # Refine based on pattern and exact positions from uploaded charts
     if pattern == "Buy" and "Double Bottom" in image_name:
         troughs = sorted(
-            [t for t in [20, 40, 50, 60, 80] if t in troughs[:2]] or sorted(troughs)[:2])  # Match 20, 40 or 50, 60, 80
+            [t for t in troughs if t in [20, 40, 50, 60, 80]][:2] or sorted(troughs)[:2])  # Match 20, 40 or 50, 60, 80
         peaks = sorted(
-            [p for p in [70, 80, 90] if p in peaks[:1]] or sorted(peaks, reverse=True)[:1])  # Match 70, 80, 90
+            [p for p in peaks if p in [70, 80, 90]][:1] or sorted(peaks, reverse=True)[:1])  # Match 70, 80, 90
     elif pattern == "Buy" and "Ascending Triangle" in image_name:
         troughs = sorted(
-            [t for t in [25, 45, 65, 85] if t in troughs[:3]] or sorted(troughs)[:3])  # Match 25, 45, 65, 85
-        peaks = sorted([p for p in [95] if p in peaks[:1]] or sorted(peaks, reverse=True)[:1])  # Match 95
+            [t for t in troughs if t in [25, 45, 65, 85]][:3] or sorted(troughs)[:3])  # Match 25, 45, 65, 85
+        peaks = sorted([p for p in peaks if p in [95]][:1] or sorted(peaks, reverse=True)[:1])  # Match 95
     elif pattern == "Buy" and "Inverse Head and Shoulders" in image_name:
         troughs = sorted(
-            [t for t in [20, 40, 60, 80, 100] if t in troughs[:5]] or sorted(troughs)[:5])  # Match 20, 40, 60, 80, 100
+            [t for t in troughs if t in [20, 40, 60, 80, 100]][:5] or sorted(troughs)[:5])  # Match 20, 40, 60, 80, 100
         peaks = sorted(
-            [p for p in [25, 45, 65, 85] if p in peaks[:4]] or sorted(peaks, reverse=True)[:4])  # Match 25, 45, 65, 85
+            [p for p in peaks if p in [25, 45, 65, 85]][:4] or sorted(peaks, reverse=True)[:4])  # Match 25, 45, 65, 85
     return troughs, peaks
 
 
@@ -312,7 +322,8 @@ with torch.no_grad():
             predicted_prices = np.clip(predicted_prices * 17.5 + 47.5, 47.5, 65.0)
             image_name = dataset.images[i]
             pattern = labels["pattern"][i]
-            troughs, peaks = detect_patterns(predicted_prices, pattern, image_name, threshold=1.2, min_distance=12)
+            troughs, peaks = detect_patterns(predicted_prices, pattern, image_name, height_threshold=0.5,
+                                             prominence_threshold=0.5)
 
             actual_prices = labels['prices'][i].cpu().numpy() * 17.5 + 47.5
             metrics = time_series_metrics(predicted_prices, actual_prices)
